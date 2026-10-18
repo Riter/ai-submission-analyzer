@@ -1,0 +1,7 @@
+# Processing configuration.
+# mode: "llm" or "ml". In lab 1 both return a deterministic baseline (no model calls).
+[processing]
+mode = "llm"
+processing_version = "1.0.0"
+prompt_template_version = "stub-0"   # used in llm mode
+feature_schema_version = "stub-0"    # used in ml mode

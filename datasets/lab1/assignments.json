@@ -1,0 +1,34 @@
+{
+  "assignments": [
+    {
+      "assignment_id": "lab-01-fizzbuzz",
+      "title": "FizzBuzz",
+      "requirements": [
+        "Function fizzbuzz(n) returns a list of strings for 1..n",
+        "Multiples of 3 are 'Fizz', of 5 are 'Buzz', of both are 'FizzBuzz'",
+        "Report explains the approach"
+      ],
+      "allowed_template": "def fizzbuzz(n: int) -> list[str]:\n    result: list[str] = []\n    return result\n"
+    },
+    {
+      "assignment_id": "lab-02-word-count",
+      "title": "Word frequency",
+      "requirements": [
+        "Function word_count(text) returns a dict word -> count",
+        "Words are compared case-insensitively",
+        "Report describes how punctuation is handled"
+      ],
+      "allowed_template": "def word_count(text: str) -> dict[str, int]:\n    counts: dict[str, int] = {}\n    return counts\n"
+    },
+    {
+      "assignment_id": "lab-03-transpose",
+      "title": "Matrix transpose",
+      "requirements": [
+        "Function transpose(matrix) returns the transposed matrix",
+        "Empty matrix returns an empty list",
+        "Report states the time complexity"
+      ],
+      "allowed_template": "def transpose(matrix: list[list[int]]) -> list[list[int]]:\n    return []\n"
+    }
+  ]
+}
