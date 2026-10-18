@@ -11,10 +11,10 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from submission_analyzer.errors import ConflictError, ErrorDetail, ErrorKind, IngestionError
-from submission_analyzer.models import Submission
-from submission_analyzer.repository import SubmissionRepository
-from submission_analyzer.validation import parse_record, validate_record
+from submission_analyzer.core.errors import ConflictError, ErrorDetail, ErrorKind, IngestionError
+from submission_analyzer.core.models import Submission
+from submission_analyzer.ingestion.validation import parse_record, validate_record
+from submission_analyzer.storage.repository import SubmissionRepository
 
 
 class IngestStatus(StrEnum):
@@ -120,12 +120,16 @@ class IngestionService:
         )
 
     def import_lines(self, lines: Iterable[str], start: int = 1) -> ImportReport:
-        """Import JSONL lines one by one; a bad line is reported, not fatal.
+        """Import JSONL lines, numbering them from ``start``."""
+        return self.import_numbered(enumerate(lines, start=start))
 
-        Blank lines are skipped. Line numbers count every physical line.
+    def import_numbered(self, lines: Iterable[tuple[int, str]]) -> ImportReport:
+        """Import ``(line_no, raw)`` pairs one by one; a bad line is reported, not fatal.
+
+        Any submission source yields such pairs. Blank lines are skipped.
         """
         report = ImportReport()
-        for line_no, raw in enumerate(lines, start=start):
+        for line_no, raw in lines:
             if not raw.strip():
                 continue
             report.lines.append(self._import_line(line_no, raw))

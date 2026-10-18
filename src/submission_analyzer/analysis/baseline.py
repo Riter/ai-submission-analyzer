@@ -10,8 +10,9 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from submission_analyzer.config import Mode, ProcessingConfig
-from submission_analyzer.models import Submission
+from submission_analyzer.core.config import Mode, ProcessingConfig
+from submission_analyzer.core.models import Submission
+from submission_analyzer.core.textutils import count_nonempty_lines
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,10 +30,6 @@ class BaselineResult:
         data = asdict(self)
         data["mode"] = str(self.mode)
         return data
-
-
-def count_nonempty_lines(content: str) -> int:
-    return sum(1 for line in content.splitlines() if line.strip())
 
 
 class BaselineProcessor:

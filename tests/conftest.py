@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 
-from submission_analyzer.repository import InMemorySubmissionRepository
-from submission_analyzer.service import IngestionService
+from submission_analyzer.ingestion.service import IngestionService
+from submission_analyzer.storage.repository import InMemorySubmissionRepository
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATASET_DIR = PROJECT_ROOT / "datasets" / "lab1"
@@ -45,3 +45,35 @@ def repository() -> InMemorySubmissionRepository:
 @pytest.fixture
 def service(repository: InMemorySubmissionRepository) -> IngestionService:
     return IngestionService(repository, ASSIGNMENT_IDS)
+
+
+TEMPLATE = "def fizzbuzz(n: int) -> list[str]:\n    result: list[str] = []\n    return result\n"
+
+
+@pytest.fixture
+def assignment():
+    from submission_analyzer.core.models import Assignment
+
+    return Assignment(
+        assignment_id="lab-01-fizzbuzz",
+        title="FizzBuzz",
+        requirements=(
+            "Function fizzbuzz(n) returns a list of strings for 1..n",
+            "Multiples of 3 are 'Fizz', of 5 are 'Buzz', of both are 'FizzBuzz'",
+            "Report explains the approach",
+        ),
+        allowed_template=TEMPLATE,
+    )
+
+
+@pytest.fixture
+def make_context(assignment, repository):
+    """Build an AnalysisContext for a given config (default: ProcessingConfig())."""
+    from submission_analyzer.analyzers import AnalysisContext
+    from submission_analyzer.core.config import ProcessingConfig, config_hash
+
+    def factory(config: ProcessingConfig | None = None) -> AnalysisContext:
+        config = config or ProcessingConfig()
+        return AnalysisContext(assignment, repository, config, config_hash(config))
+
+    return factory

@@ -5,3 +5,7 @@ mode = "llm"
 processing_version = "1.0.0"
 prompt_template_version = "stub-0"   # used in llm mode
 feature_schema_version = "stub-0"    # used in ml mode
+
+# Analyzers run by `submission-analyzer analyze`, looked up by id in the registry.
+[analyzers]
+enabled = ["length", "template", "requirements", "model_stub"]

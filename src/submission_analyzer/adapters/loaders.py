@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from submission_analyzer.errors import DataSourceError
-from submission_analyzer.models import Assignment
+from submission_analyzer.core.errors import DataSourceError
+from submission_analyzer.core.models import Assignment
 
 _ASSIGNMENT_FIELDS = frozenset({"assignment_id", "title", "requirements", "allowed_template"})
 

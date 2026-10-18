@@ -14,14 +14,17 @@ from pathlib import Path
 from typing import Any
 
 from submission_analyzer import __version__
-from submission_analyzer.baseline import BaselineProcessor
-from submission_analyzer.config import ProcessingConfig, load_config
-from submission_analyzer.errors import ConfigError, DataSourceError
-from submission_analyzer.hashing import file_sha256
-from submission_analyzer.loaders import load_assignments
-from submission_analyzer.manifest import build_manifest
-from submission_analyzer.repository import InMemorySubmissionRepository
-from submission_analyzer.service import ImportReport, IngestionService
+from submission_analyzer.adapters.loaders import load_assignments
+from submission_analyzer.adapters.sources import JsonlFileSource
+from submission_analyzer.analysis.baseline import BaselineProcessor
+from submission_analyzer.analysis.registry import default_registry
+from submission_analyzer.analysis.service import AnalysisService
+from submission_analyzer.core.config import ProcessingConfig, load_config
+from submission_analyzer.core.errors import ConfigError, DataSourceError
+from submission_analyzer.core.hashing import file_sha256
+from submission_analyzer.ingestion.manifest import build_manifest
+from submission_analyzer.ingestion.service import ImportReport, IngestionService
+from submission_analyzer.storage.repository import InMemorySubmissionRepository
 
 EXIT_OK = 0
 EXIT_USAGE = 2
@@ -43,18 +46,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_baseline = sub.add_parser("baseline", help="import, then run the deterministic baseline on accepted submissions")
     add_common(p_baseline)
+
+    p_analyze = sub.add_parser("analyze", help="import, then run the configured analyzers; print reports")
+    add_common(p_analyze)
+    p_analyze.set_defaults(assignments_required=True)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if getattr(args, "assignments_required", False) and args.assignments is None:
+        parser.error(f"{args.command} requires --assignments")
     try:
         config = load_config(args.config) if args.config else ProcessingConfig()
-        known_ids = (
-            {a.assignment_id for a in load_assignments(args.assignments)} if args.assignments else None
+        assignments = (
+            {a.assignment_id: a for a in load_assignments(args.assignments)} if args.assignments else None
         )
         repository = InMemorySubmissionRepository()
-        service = IngestionService(repository, known_ids)
+        service = IngestionService(repository, assignments.keys() if assignments is not None else None)
+        analysis = (
+            AnalysisService(default_registry(), config, assignments, repository)
+            if args.command == "analyze" and assignments is not None
+            else None
+        )
         report = _import_file(service, args.file)
     except (ConfigError, DataSourceError, OSError, UnicodeDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -69,6 +84,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.manifest.parent.mkdir(parents=True, exist_ok=True)
             args.manifest.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             output["manifest"] = str(args.manifest)
+    elif analysis is not None:
+        output = {
+            "mode": str(config.mode),
+            "config_hash": analysis.config_hash,
+            "import": report.to_dict()["counts"],
+            "reports": [r.to_dict() for r in analysis.analyze_all()],
+        }
     else:
         processor = BaselineProcessor(config)
         output = {
@@ -81,8 +103,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _import_file(service: IngestionService, path: Path) -> ImportReport:
-    with path.open(encoding="utf-8") as fh:
-        return service.import_lines(fh)
+    # The source owns the file handle; the service only sees (line_no, raw) pairs.
+    with JsonlFileSource(path) as source:
+        return service.import_numbered(source)
 
 
 if __name__ == "__main__":

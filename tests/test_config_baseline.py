@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from submission_analyzer.baseline import BaselineProcessor, count_nonempty_lines
-from submission_analyzer.config import Mode, ProcessingConfig, load_config, parse_config
-from submission_analyzer.errors import ConfigError
-from submission_analyzer.validation import validate_record
+from submission_analyzer.analysis.baseline import BaselineProcessor, count_nonempty_lines
+from submission_analyzer.core.config import Mode, ProcessingConfig, config_hash, load_config, parse_config
+from submission_analyzer.core.errors import ConfigError
+from submission_analyzer.ingestion.validation import validate_record
 
 from .conftest import PROJECT_ROOT
 
@@ -76,3 +76,36 @@ def test_baseline_records_version_of_the_selected_mode(make_record):
     assert ml.model_version == "features-3"
     # Content-derived part of the result does not depend on the mode.
     assert (llm.text_nonempty_lines, llm.code_nonempty_lines) == (ml.text_nonempty_lines, ml.code_nonempty_lines)
+
+
+def test_config_hash_is_stable_and_sensitive():
+    base = ProcessingConfig()
+    assert config_hash(base) == config_hash(ProcessingConfig())
+    assert config_hash(base).startswith("sha256:")
+    changed = [
+        ProcessingConfig(mode=Mode.ML),
+        ProcessingConfig(prompt_template_version="stub-1"),
+        ProcessingConfig(processing_version="1.0.1"),
+        ProcessingConfig(analyzers=("length",)),
+    ]
+    assert len({config_hash(c) for c in changed} | {config_hash(base)}) == len(changed) + 1
+
+
+def test_analyzers_section():
+    config = parse_config({"processing": {}, "analyzers": {"enabled": ["length", "template"]}})
+    assert config.analyzers == ("length", "template")
+    assert parse_config({"processing": {}}).analyzers == ProcessingConfig().analyzers
+
+
+@pytest.mark.parametrize(
+    "analyzers",
+    [{"enabled": []}, {"enabled": "length"}, {"enabled": ["length", "length"]}, {"enabled": [""]}, {"other": 1}],
+)
+def test_invalid_analyzers_section(analyzers):
+    with pytest.raises(ConfigError):
+        parse_config({"processing": {}, "analyzers": analyzers})
+
+
+def test_unknown_config_table_is_rejected():
+    with pytest.raises(ConfigError, match="unknown config tables"):
+        parse_config({"processing": {}, "llm": {"temperature": 0}})

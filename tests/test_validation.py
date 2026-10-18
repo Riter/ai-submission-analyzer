@@ -5,8 +5,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from submission_analyzer.errors import ErrorKind, FormatError, SchemaError
-from submission_analyzer.validation import parse_record, validate_record
+from submission_analyzer.core.errors import ErrorKind, FormatError, SchemaError
+from submission_analyzer.ingestion.validation import parse_record, validate_record
 
 from .conftest import ASSIGNMENT_IDS
 

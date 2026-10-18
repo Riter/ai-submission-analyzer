@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import json
 
-from submission_analyzer.config import ProcessingConfig
-from submission_analyzer.manifest import build_manifest
-from submission_analyzer.repository import InMemorySubmissionRepository
-from submission_analyzer.service import IngestionService
+from submission_analyzer.core.config import ProcessingConfig
+from submission_analyzer.ingestion.manifest import build_manifest
+from submission_analyzer.ingestion.service import IngestionService
+from submission_analyzer.storage.repository import InMemorySubmissionRepository
 
 
 def _import(lines):

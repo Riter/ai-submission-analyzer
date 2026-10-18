@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from submission_analyzer.errors import ConflictError, ErrorKind, SchemaError
-from submission_analyzer.service import IngestStatus
+from submission_analyzer.core.errors import ConflictError, ErrorKind, SchemaError
+from submission_analyzer.ingestion.service import IngestStatus
 
 
 def test_new_submission_is_accepted(service, repository, make_record):

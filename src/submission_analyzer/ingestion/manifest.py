@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from submission_analyzer.config import ProcessingConfig
-from submission_analyzer.service import ImportReport
+from submission_analyzer.core.config import ProcessingConfig, config_hash
+from submission_analyzer.ingestion.service import ImportReport
 
 MANIFEST_SCHEMA_VERSION = "1"
 RAW_CONTENT_FIELDS: tuple[str, ...] = ("text", "code")
@@ -32,6 +32,8 @@ def build_manifest(
             "processing_version": config.processing_version,
             "prompt_template_version": config.prompt_template_version,
             "feature_schema_version": config.feature_schema_version,
+            "analyzers": list(config.analyzers),
+            "config_hash": config_hash(config),
         },
         "source": {"file": source_name, "sha256": source_sha256},
         "raw_content_fields": list(RAW_CONTENT_FIELDS),

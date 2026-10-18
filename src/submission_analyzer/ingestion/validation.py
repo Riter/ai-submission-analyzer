@@ -12,9 +12,9 @@ from collections.abc import Collection, Mapping
 from datetime import datetime
 from typing import Any
 
-from submission_analyzer.errors import ErrorDetail, FormatError, SchemaError
-from submission_analyzer.hashing import content_hash
-from submission_analyzer.models import AIDeclaration, Submission
+from submission_analyzer.core.errors import ErrorDetail, FormatError, SchemaError
+from submission_analyzer.core.hashing import content_hash
+from submission_analyzer.core.models import AIDeclaration, Submission
 
 ID_FIELDS: tuple[str, ...] = ("submission_id", "assignment_id", "student_id")
 CONTENT_FIELDS: tuple[str, ...] = ("text", "code")

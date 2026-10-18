@@ -91,3 +91,41 @@ def test_bad_config_is_usage_error(capsys, tmp_path: Path):
     code = main(["import", SUBMISSIONS, "--config", str(config)])
     assert code == EXIT_USAGE
     assert "mode must be one of" in capsys.readouterr().err
+
+
+def test_analyze_command(capsys):
+    code, data = run(capsys, "analyze", SUBMISSIONS, "--assignments", ASSIGNMENTS, "--config", CONFIG)
+
+    assert code == EXIT_OK
+    assert data["import"] == {"accepted": 12, "duplicate": 1, "rejected_lines": 1}
+    assert len(data["reports"]) == 12 * 4
+    assert {r["analyzer_id"] for r in data["reports"]} == {"length", "template", "requirements", "model_stub"}
+    assert all(r["status"] == "succeeded" and r["config_hash"] == data["config_hash"] for r in data["reports"])
+
+
+def test_analyze_is_reproducible_and_mode_changes_config_hash(capsys, tmp_path: Path):
+    _, first = run(capsys, "analyze", SUBMISSIONS, "--assignments", ASSIGNMENTS, "--config", CONFIG)
+    _, second = run(capsys, "analyze", SUBMISSIONS, "--assignments", ASSIGNMENTS, "--config", CONFIG)
+    assert first == second
+
+    ml = tmp_path / "ml.toml"
+    ml.write_text('[processing]\nmode = "ml"\n', encoding="utf-8")
+    _, ml_run = run(capsys, "analyze", SUBMISSIONS, "--assignments", ASSIGNMENTS, "--config", str(ml))
+    assert ml_run["config_hash"] != first["config_hash"]
+    stub_versions = {r["analyzer_version"] for r in ml_run["reports"] if r["analyzer_id"] == "model_stub"}
+    assert stub_versions == {"0.1.0+ml.stub-0"}
+
+
+def test_analyze_requires_assignments(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        main(["analyze", SUBMISSIONS])
+    assert exc_info.value.code == EXIT_USAGE
+    assert "requires --assignments" in capsys.readouterr().err
+
+
+def test_analyze_unknown_analyzer_is_usage_error(capsys, tmp_path: Path):
+    config = tmp_path / "c.toml"
+    config.write_text('[processing]\n[analyzers]\nenabled = ["length", "nope"]\n', encoding="utf-8")
+    code = main(["analyze", SUBMISSIONS, "--assignments", ASSIGNMENTS, "--config", str(config)])
+    assert code == EXIT_USAGE
+    assert "unknown analyzer 'nope'" in capsys.readouterr().err

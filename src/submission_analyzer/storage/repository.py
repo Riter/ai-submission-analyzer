@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Protocol
 
-from submission_analyzer.models import Submission
+from submission_analyzer.core.models import Submission
 
 
 class SubmissionRepository(Protocol):
