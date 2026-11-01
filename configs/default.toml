@@ -1,11 +1,18 @@
 # Processing configuration.
-# mode: "llm" or "ml". In lab 1 both return a deterministic baseline (no model calls).
+# mode: "ml" or "llm". From lab 2 the project follows the ML track; "llm" stays a stub.
 [processing]
-mode = "llm"
+mode = "ml"
 processing_version = "1.0.0"
 prompt_template_version = "stub-0"   # used in llm mode
-feature_schema_version = "stub-0"    # used in ml mode
+feature_schema_version = "pair-1"    # used in ml mode: schema of pair features
 
 # Analyzers run by `submission-analyzer analyze`, looked up by id in the registry.
 [analyzers]
-enabled = ["length", "template", "requirements", "model_stub"]
+enabled = ["length", "template", "requirements", "token_similarity", "model_stub"]
+
+# Code similarity (lab 2): token n-grams from `tokenize`, compared by Jaccard and TF-IDF cosine.
+[similarity]
+ngram = 3
+normalize_identifiers = true   # user-defined names -> ID, string literals -> STR
+top_k = 5
+methods = ["jaccard", "tfidf"]

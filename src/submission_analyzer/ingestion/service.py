@@ -6,7 +6,7 @@ touches files, stdin or HTTP.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -129,13 +129,23 @@ class IngestionService:
         Any submission source yields such pairs. Blank lines are skipped.
         """
         report = ImportReport()
+        for result, _ in self.iter_numbered(lines):
+            report.lines.append(result)
+        return report
+
+    def iter_numbered(self, lines: Iterable[tuple[int, str]]) -> Iterator[tuple[LineResult, Submission | None]]:
+        """Lazily import ``(line_no, raw)`` pairs, one line per step.
+
+        Yields the line result together with the submission when it was newly
+        accepted (``None`` for duplicates and rejected lines). Nothing is read
+        from ``lines`` ahead of what the consumer asks for.
+        """
         for line_no, raw in lines:
             if not raw.strip():
                 continue
-            report.lines.append(self._import_line(line_no, raw))
-        return report
+            yield self._import_line(line_no, raw)
 
-    def _import_line(self, line_no: int, raw: str) -> LineResult:
+    def _import_line(self, line_no: int, raw: str) -> tuple[LineResult, Submission | None]:
         submission_id: str | None = None
         try:
             record = parse_record(raw)
@@ -143,10 +153,11 @@ class IngestionService:
             submission_id = candidate if isinstance(candidate, str) else None
             outcome = self.submit(record)
         except IngestionError as exc:
-            return LineResult(line_no, exc.kind, submission_id, errors=exc.details)
-        return LineResult(
+            return LineResult(line_no, exc.kind, submission_id, errors=exc.details), None
+        result = LineResult(
             line_no,
             outcome.status,
             outcome.submission.submission_id,
             content_hash=outcome.submission.content_hash,
         )
+        return result, outcome.submission if outcome.status is IngestStatus.ACCEPTED else None

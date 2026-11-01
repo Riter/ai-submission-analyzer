@@ -14,6 +14,7 @@ from submission_analyzer.analyzers import (
     ModelStubAnalyzer,
     RequirementsAnalyzer,
     TemplateAnalyzer,
+    TokenSimilarityAnalyzer,
 )
 from submission_analyzer.core.config import ProcessingConfig
 from submission_analyzer.core.errors import ConfigError
@@ -51,5 +52,6 @@ def default_registry() -> AnalyzerRegistry:
     registry.register("length", lambda config: LengthAnalyzer())
     registry.register("template", lambda config: TemplateAnalyzer())
     registry.register("requirements", lambda config: RequirementsAnalyzer())
+    registry.register("token_similarity", TokenSimilarityAnalyzer)
     registry.register("model_stub", ModelStubAnalyzer)
     return registry

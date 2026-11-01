@@ -65,20 +65,26 @@
 
 ```toml
 [processing]
-mode = "llm"                       # "llm" | "ml"
+mode = "ml"                        # "ml" | "llm" (с ЛР 2 проект идёт по ML-ветке, llm — заглушка)
 processing_version = "1.0.0"
 prompt_template_version = "stub-0" # обязателен в llm-режиме
-feature_schema_version = "stub-0"  # обязателен в ml-режиме
+feature_schema_version = "pair-1"  # обязателен в ml-режиме: схема признаков пары
 
 [analyzers]                        # необязательно; по умолчанию все встроенные
-enabled = ["length", "template", "requirements", "model_stub"]
+enabled = ["length", "template", "requirements", "token_similarity", "model_stub"]
+
+[similarity]                       # необязательно (ЛР 2)
+ngram = 3                          # длина токенной n-граммы
+normalize_identifiers = true       # пользовательские имена -> ID, строковые литералы -> STR
+top_k = 5                          # число кандидатов по умолчанию
+methods = ["jaccard", "tfidf"]     # разрешённые методы сравнения
 ```
 
 Неизвестные таблицы и ключи отклоняются (`ConfigError`), неизвестный id анализатора — при создании сервиса,
 до обработки первой сдачи.
 
 `config_hash` = `sha256:` от канонического JSON `{mode, processing_version, prompt_template_version,
-feature_schema_version, analyzers}`. Одинаковый `config_hash` означает, что отчёты получены одной
+feature_schema_version, analyzers, similarity}`. Одинаковый `config_hash` означает, что отчёты получены одной
 конфигурацией и сравнимы.
 
 На ЛР 1 оба режима возвращают детерминированный baseline: число непустых строк `text` и `code`,
@@ -132,3 +138,72 @@ feature_schema_version, analyzers}`. Одинаковый `config_hash` озна
   как в редакторе. Сервис отклоняет отчёт, если диапазон выходит за пределы содержимого.
 - `analyzer_version` у `model_stub` включает режим и версию промпта/схемы признаков, например `0.1.0+llm.stub-0`.
 - Отчёт — это сигнал для преподавателя, а не вердикт о нарушении.
+
+## Корпус ЛР 2 (`datasets/lab2/`)
+
+Генерируется `scripts/generate_lab2_data.py` (seed 42). Сдачи — в том же формате `Submission`;
+происхождение хранится **отдельно** и в анализаторы не передаётся: это описание того, как сделан учебный
+пример, а не вердикт о плагиате.
+
+`provenance.jsonl` — одна строка на сдачу:
+
+```json
+{"submission_id": "sub-0002", "family_id": "lab-01-fizzbuzz/f1", "origin": "reformatted", "derived_from": "sub-0001"}
+```
+
+- `family_id` — семейство: оригинальное решение и все его производные.
+- `origin`: `original` | `exact_copy` | `reformatted` (отступы, комментарии, пустые строки) |
+  `renamed` (переименование идентификаторов) | `resubmission` (повторная версия того же студента).
+
+`pairs.jsonl` — размеченные пары разных студентов одного задания:
+
+```json
+{"a": "sub-0001", "b": "sub-0005", "assignment_id": "lab-01-fizzbuzz", "family_a": "lab-01-fizzbuzz/f1",
+ "family_b": "lab-01-fizzbuzz/f2", "derivation_relation": "independent", "template_only": true, "split": "tune"}
+```
+
+- `derivation_relation`: `exact_copy` | `reformatted` | `renamed` (внутри семейства; для пары двух производных
+  берётся более сильное преобразование) | `independent` (разные семейства).
+- `template_only`: у независимой пары общие непустые строки есть, и все они — строки разрешённого шаблона.
+- `split`: `tune` | `eval`. Пары между семействами разных сторон не размечаются.
+
+`split.json`: `{"seed": 42, "families": {family_id: side}, "submissions": {submission_id: side}}`.
+Семейство целиком лежит на одной стороне; `check_no_family_leakage` проверяет это для сдач и пар.
+
+## Признаки и сравнение пар (ЛР 2)
+
+- Признаки строятся из `tokenize`: отбрасываются `COMMENT`, `NL`, `NEWLINE`, `INDENT`, `DEDENT`, `ENCODING`,
+  `ENDMARKER`. При `normalize_identifiers` пользовательские имена заменяются на `ID`, строки — на `STR`;
+  ключевые слова, builtins и имена атрибутов после `.` сохраняются.
+- Строка кода считается строкой шаблона, если её токены совпадают с токенами строки `allowed_template`
+  (отступы и комментарии не мешают). N-граммы только из шаблонных токенов идут в `template_grams` и в score
+  не входят.
+- Код **не исполняется**: только `tokenize` и `ast.parse` (для флага `syntax_error`).
+- Jaccard = |A ∩ B| / |A ∪ B| по множествам своих n-грамм; пустое объединение → `score = null`,
+  `status = insufficient_data`.
+- TF-IDF + cosine: словарь и IDF — только по стороне `tune` (`fit`), остальные сдачи — только `transform`.
+  N-граммы, которых нет в словаре настройки, веса не имеют.
+
+`PairResult` (команда `submission-analyzer similarity`):
+
+```json
+{
+  "a": "sub-0001", "b": "sub-0002", "assignment_id": "lab-01-fizzbuzz", "kind": "cross_student",
+  "method_id": "jaccard", "method_version": "1.0.0",
+  "score": 1.0, "status": "scored", "shared_grams": 44, "template_shared": 1.0,
+  "explanation": "44 n-grams of the students' own code are shared. ... not a verdict about a violation.",
+  "evidence_a": [{"source": "code", "start_line": 2, "end_line": 12, "note": "n-grams shared with the other submission (outside the allowed template)"}],
+  "evidence_b": [...],
+  "warnings": []
+}
+```
+
+- `kind`: `cross_student` (разные студенты) | `same_student` (версии одного студента — отдельный список).
+  Пара сдачи с самой собой и пары разных заданий не строятся.
+- `template_shared`: Jaccard по шаблонным n-граммам или `null`. Если общего нет ничего, кроме шаблона,
+  `explanation` прямо говорит, что использование шаблона разрешено.
+- `evidence_a` / `evidence_b`: диапазоны строк каждой сдачи, где лежат общие n-граммы (вне шаблона).
+- `warnings`: например, сдача не разбирается `ast.parse` и сравнена только по токенам.
+
+Признаки пары для ML (`similarity/pair_features.py`, схема `pair-1`): `jaccard`, `tfidf_cosine`,
+`template_shared`, `shared_grams`, `size_ratio`, `token_ratio`, `has_parse_error`, `has_syntax_error`.

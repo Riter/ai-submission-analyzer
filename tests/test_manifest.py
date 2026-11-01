@@ -19,7 +19,7 @@ def test_manifest_lists_ids_hashes_and_versions(make_record):
     manifest = build_manifest(report, ProcessingConfig(), source_name="s.jsonl", source_sha256="sha256:abc")
 
     assert manifest["processing"]["processing_version"] == "1.0.0"
-    assert manifest["processing"]["mode"] == "llm"
+    assert manifest["processing"]["mode"] == "ml"
     assert manifest["source"] == {"file": "s.jsonl", "sha256": "sha256:abc"}
     assert manifest["counts"] == {"accepted": 1, "duplicate": 1, "rejected_lines": 1}
     statuses = [(e["line_no"], e["status"]) for e in manifest["entries"]]

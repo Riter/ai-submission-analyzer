@@ -7,6 +7,7 @@
 | ЛР | Тема | Отчёт |
 |----|------|-------|
 | 1 | Приём работ и расширяемые анализаторы | [docs/reports/lab-1.md](docs/reports/lab-1.md) |
+| 2 | Анализ сходства и оценка качества (этап А) | [docs/reports/lab-2.md](docs/reports/lab-2.md) |
 
 ## Установка
 
@@ -46,7 +47,21 @@ python scripts/generate_lab1_data.py      # → datasets/lab1/
 | `datasets/lab1/submissions.jsonl` | 12 корректных сдач + дубликат + конфликт идентификатора |
 | `datasets/lab1/invalid_submissions.jsonl` | по строке на каждый тип ошибки + 1 корректная строка в конце |
 
-Формат записей, коды ошибок и формат manifest — в [`docs/data_contract.md`](docs/data_contract.md).
+Корпус для анализа сходства (ЛР 2) генерируется так же детерминированно:
+
+```bash
+python scripts/generate_lab2_data.py      # → datasets/lab2/
+```
+
+| Файл | Содержимое |
+|------|-----------|
+| `datasets/lab2/assignments.json` | 4 задания с разрешённым шаблоном |
+| `datasets/lab2/submissions.jsonl` | 40 сдач: оригиналы, копии, переформатированные и переименованные варианты, шаблон, SyntaxError, повторные версии |
+| `datasets/lab2/provenance.jsonl` | происхождение каждой сдачи: `family_id`, `origin`, `derived_from` |
+| `datasets/lab2/pairs.jsonl` | 74 размеченные пары: `derivation_relation`, `template_only`, `split` |
+| `datasets/lab2/split.json` | сторона `tune` / `eval` каждого семейства и сдачи |
+
+Формат записей, коды ошибок, формат manifest и корпуса — в [`docs/data_contract.md`](docs/data_contract.md).
 
 ## Запуск
 
@@ -67,7 +82,16 @@ submission-analyzer baseline datasets/lab1/submissions.jsonl --config configs/de
 submission-analyzer analyze datasets/lab1/submissions.jsonl \
     --assignments datasets/lab1/assignments.json \
     --config configs/default.toml
+
+# сходство (ЛР 2): потоковое чтение -> признаки tokenize -> пары одного задания разных студентов
+submission-analyzer similarity datasets/lab2/submissions.jsonl \
+    --assignments datasets/lab2/assignments.json --config configs/default.toml \
+    [--method jaccard|tfidf] [--split datasets/lab2/split.json] [--submission sub-0001 --top-k 5]
 ```
+
+`--method tfidf` требует `--split`: векторизатор обучается только на стороне `tune`. Без `--submission`
+печатаются все пары (`pairs`) и отдельно версии одного студента (`same_student_pairs`); с `--submission` —
+top-k кандидатов без самой работы и без сдач других заданий. Score — сигнал для ручного разбора, а не вердикт.
 
 ### Анализаторы
 
@@ -76,6 +100,7 @@ submission-analyzer analyze datasets/lab1/submissions.jsonl \
 | `length` | число непустых строк текста и кода; пояснение в `rubric_feedback`, `score=null` |
 | `template` | точные строки разрешённого шаблона в коде → `similarity` + evidence; совпадение с шаблоном разрешено |
 | `requirements` | локальная проверка требований задания по маркерам (имена функций, литералы) |
+| `token_similarity` | наибольший Jaccard по токенным 3-граммам с работой другого студента того же задания; шаблон не учитывается |
 | `model_stub` | заглушка модели: `InputPreparer → ModelClient → FeedbackFormatter`, тот же контракт отчёта |
 
 Набор анализаторов задаётся в конфигурации, каждый отчёт содержит `analyzer_id`, `analyzer_version`
@@ -103,7 +128,8 @@ registry.register("my", lambda config: MyAnalyzer())
 ```
 
 Вместо `submission-analyzer` можно использовать `python -m submission_analyzer`.
-Код возврата: `0` — импорт выполнен (даже если часть строк отклонена), `2` — не читается файл или неверная конфигурация.
+Код возврата: `0` — команда выполнена (даже если часть строк отклонена), `2` — не читается файл, неверная
+конфигурация или аргументы.
 
 Валидацию можно вызвать и напрямую из Python, без CLI:
 
@@ -119,6 +145,7 @@ outcome = service.submit({...})   # IngestOutcome или SchemaError / ConflictE
 
 ```bash
 pytest -q
+python scripts/measure_index_memory.py    # память индекса признаков (ЛР 2)
 ```
 
 ## Структура
@@ -130,7 +157,8 @@ src/submission_analyzer/
     models.py             Submission, AIDeclaration, Assignment (frozen dataclasses)
     errors.py             FormatError / SchemaError / ConflictError с деталями code, field, message
     reports.py            AnalysisReport, RubricFeedback, Evidence
-    config.py             ProcessingConfig, режим ml | llm, набор анализаторов, config_hash
+    config.py             ProcessingConfig, режим ml | llm, набор анализаторов, [similarity], config_hash
+    corpus.py             происхождение примеров, размеченные пары, split, проверка утечки семейств
     hashing.py            content_hash, file_sha256
     textutils.py          source_lines, count_nonempty_lines
   ingestion/            приём сдач
@@ -141,18 +169,25 @@ src/submission_analyzer/
     repository.py         SubmissionRepository (Protocol) + in-memory реализация
   adapters/             работа с файлами
     sources.py            JsonlFileSource / InMemorySource (контекстные менеджеры)
-    loaders.py            чтение assignments.json
-  analyzers/            протокол Analyzer + length, template, requirements, model_stub
+    loaders.py            чтение assignments.json и метаданных корпуса (provenance, pairs, split)
+  analyzers/            протокол Analyzer + length, template, requirements, token_similarity, model_stub
+  similarity/           сходство кода (ЛР 2)
+    features.py           токены tokenize -> n-граммы, шаблонные n-граммы отдельно
+    methods.py            SimilarityMethod: Jaccard, TF-IDF + cosine (fit только на tune)
+    pairs.py              кандидаты, PairResult с evidence, top-k
+    pair_features.py      признаки пары для ML-классификатора (схема pair-1)
+    index.py, pipeline.py индекс признаков и ленивый конвейер read -> validate -> features
   analysis/             запуск анализаторов
     registry.py           реестр фабрик анализаторов
     service.py            AnalysisService: запуск по реестру, изоляция ошибок
     baseline.py           детерминированный baseline для обоих режимов
 ```
 
-Зависимости направлены к `core`, циклов нет: `storage`, `adapters`, `analyzers` → `core`;
-`ingestion` → `core`, `storage`; `analysis` → `analyzers`, `core`; `cli` собирает всё вместе.
+Зависимости направлены к `core`, циклов нет: `storage`, `adapters` → `core`; `ingestion` → `core`, `storage`;
+`similarity` → `core`, `ingestion`; `analyzers` → `core`, `similarity`; `analysis` → `analyzers`, `core`;
+`cli` собирает всё вместе.
 Файлы, stdin и сеть трогают только `adapters`, `cli` и `core.config.load_config`; доменные пакеты
-(`core`, `ingestion`, `storage`, `analyzers`, `analysis`) работают с уже прочитанными данными.
+(`core`, `ingestion`, `storage`, `similarity`, `analyzers`, `analysis`) работают с уже прочитанными данными.
 
 ## Документы
 - [`docs/data_contract.md`](docs/data_contract.md) — формат данных, коды ошибок, manifest, AnalysisReport

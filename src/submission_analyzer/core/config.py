@@ -1,5 +1,6 @@
 """Processing configuration: which intelligent mode (ML or LLM) is selected,
-which analyzers run, and which versions of the pipeline are in use."""
+which analyzers run, how similarity is computed, and which versions of the
+pipeline are in use."""
 
 from __future__ import annotations
 
@@ -20,19 +21,41 @@ class Mode(StrEnum):
     LLM = "llm"
 
 
-_KNOWN_TABLES = frozenset({"processing", "analyzers"})
+_KNOWN_TABLES = frozenset({"processing", "analyzers", "similarity"})
 _KNOWN_KEYS = frozenset({"mode", "processing_version", "prompt_template_version", "feature_schema_version"})
-DEFAULT_ANALYZERS: tuple[str, ...] = ("length", "template", "requirements", "model_stub")
+_SIMILARITY_KEYS = frozenset({"ngram", "normalize_identifiers", "top_k", "methods"})
+DEFAULT_ANALYZERS: tuple[str, ...] = ("length", "template", "requirements", "token_similarity", "model_stub")
+SIMILARITY_METHODS: tuple[str, ...] = ("jaccard", "tfidf")
+
+
+@dataclass(frozen=True, slots=True)
+class SimilarityConfig:
+    """How code is turned into features and compared (lab 2)."""
+
+    ngram: int = 3
+    # Replace user-defined names with ``ID`` and string literals with ``STR``.
+    normalize_identifiers: bool = True
+    top_k: int = 5
+    methods: tuple[str, ...] = SIMILARITY_METHODS
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ngram": self.ngram,
+            "normalize_identifiers": self.normalize_identifiers,
+            "top_k": self.top_k,
+            "methods": list(self.methods),
+        }
 
 
 @dataclass(frozen=True, slots=True)
 class ProcessingConfig:
-    mode: Mode = Mode.LLM
+    mode: Mode = Mode.ML
     processing_version: str = "1.0.0"
     # LLM mode: version of the prompt template. ML mode: version of the feature schema.
     prompt_template_version: str | None = "stub-0"
-    feature_schema_version: str | None = "stub-0"
+    feature_schema_version: str | None = "pair-1"
     analyzers: tuple[str, ...] = DEFAULT_ANALYZERS
+    similarity: SimilarityConfig = SimilarityConfig()
 
 
 def config_hash(config: ProcessingConfig) -> str:
@@ -47,12 +70,16 @@ def config_hash(config: ProcessingConfig) -> str:
         "prompt_template_version": config.prompt_template_version,
         "feature_schema_version": config.feature_schema_version,
         "analyzers": list(config.analyzers),
+        "similarity": config.similarity.to_dict(),
     }
     return "sha256:" + hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
 
 def parse_config(data: Mapping[str, Any]) -> ProcessingConfig:
-    """Build a config from a parsed TOML document (``[processing]`` and optional ``[analyzers]``)."""
+    """Build a config from a parsed TOML document.
+
+    ``[processing]`` is required; ``[analyzers]`` and ``[similarity]`` are optional.
+    """
     unknown_tables = sorted(set(data) - _KNOWN_TABLES)
     if unknown_tables:
         raise ConfigError(f"unknown config tables: {', '.join(unknown_tables)}")
@@ -65,14 +92,14 @@ def parse_config(data: Mapping[str, Any]) -> ProcessingConfig:
     if unknown:
         raise ConfigError(f"unknown config keys in [processing]: {', '.join(unknown)}")
 
-    raw_mode = section.get("mode", Mode.LLM.value)
+    defaults = ProcessingConfig()
+    raw_mode = section.get("mode", defaults.mode.value)
     try:
         mode = Mode(raw_mode)
     except ValueError:
         allowed = ", ".join(m.value for m in Mode)
         raise ConfigError(f"processing.mode must be one of: {allowed}; got {raw_mode!r}") from None
 
-    defaults = ProcessingConfig()
     values: dict[str, str | None] = {}
     for key in ("processing_version", "prompt_template_version", "feature_schema_version"):
         value = section.get(key, getattr(defaults, key))
@@ -85,7 +112,12 @@ def parse_config(data: Mapping[str, Any]) -> ProcessingConfig:
     if mode is Mode.ML and not values["feature_schema_version"]:
         raise ConfigError("ml mode requires processing.feature_schema_version")
 
-    return ProcessingConfig(mode=mode, analyzers=_parse_analyzers(data.get("analyzers")), **values)  # type: ignore[arg-type]
+    return ProcessingConfig(  # type: ignore[arg-type]
+        mode=mode,
+        analyzers=_parse_analyzers(data.get("analyzers")),
+        similarity=_parse_similarity(data.get("similarity")),
+        **values,
+    )
 
 
 def _parse_analyzers(section: Any) -> tuple[str, ...]:
@@ -103,6 +135,46 @@ def _parse_analyzers(section: Any) -> tuple[str, ...]:
     if len(set(enabled)) != len(enabled):
         raise ConfigError("analyzers.enabled contains duplicate ids")
     return tuple(enabled)
+
+
+def _parse_similarity(section: Any) -> SimilarityConfig:
+    defaults = SimilarityConfig()
+    if section is None:
+        return defaults
+    if not isinstance(section, Mapping):
+        raise ConfigError("[similarity] must be a table")
+    unknown = sorted(set(section) - _SIMILARITY_KEYS)
+    if unknown:
+        raise ConfigError(f"unknown config keys in [similarity]: {', '.join(unknown)}")
+
+    def positive_int(key: str) -> int:
+        value = section.get(key, getattr(defaults, key))
+        # bool is a subclass of int; `ngram = true` must not pass as 1.
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ConfigError(f"similarity.{key} must be a positive integer")
+        return value
+
+    normalize = section.get("normalize_identifiers", defaults.normalize_identifiers)
+    if not isinstance(normalize, bool):
+        raise ConfigError("similarity.normalize_identifiers must be true or false")
+
+    methods = section.get("methods", list(defaults.methods))
+    if not isinstance(methods, list) or not methods or not all(isinstance(m, str) for m in methods):
+        raise ConfigError("similarity.methods must be a non-empty list of method ids")
+    unknown_methods = sorted(set(methods) - set(SIMILARITY_METHODS))
+    if unknown_methods:
+        raise ConfigError(
+            f"unknown similarity methods: {', '.join(unknown_methods)}; known: {', '.join(SIMILARITY_METHODS)}"
+        )
+    if len(set(methods)) != len(methods):
+        raise ConfigError("similarity.methods contains duplicate ids")
+
+    return SimilarityConfig(
+        ngram=positive_int("ngram"),
+        normalize_identifiers=normalize,
+        top_k=positive_int("top_k"),
+        methods=tuple(methods),
+    )
 
 
 def load_config(path: Path) -> ProcessingConfig:

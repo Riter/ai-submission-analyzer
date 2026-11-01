@@ -12,6 +12,7 @@ from submission_analyzer.storage.repository import InMemorySubmissionRepository
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATASET_DIR = PROJECT_ROOT / "datasets" / "lab1"
+LAB2_DIR = PROJECT_ROOT / "datasets" / "lab2"
 ASSIGNMENT_IDS = frozenset({"lab-01-fizzbuzz", "lab-02-word-count"})
 
 _VALID_RECORD: dict[str, Any] = {

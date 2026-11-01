@@ -5,7 +5,14 @@ from pathlib import Path
 import pytest
 
 from submission_analyzer.analysis.baseline import BaselineProcessor, count_nonempty_lines
-from submission_analyzer.core.config import Mode, ProcessingConfig, config_hash, load_config, parse_config
+from submission_analyzer.core.config import (
+    Mode,
+    ProcessingConfig,
+    SimilarityConfig,
+    config_hash,
+    load_config,
+    parse_config,
+)
 from submission_analyzer.core.errors import ConfigError
 from submission_analyzer.ingestion.validation import validate_record
 
@@ -14,8 +21,10 @@ from .conftest import PROJECT_ROOT
 
 def test_default_config_file_loads():
     config = load_config(PROJECT_ROOT / "configs" / "default.toml")
-    assert config.mode is Mode.LLM
+    assert config.mode is Mode.ML
     assert config.processing_version == "1.0.0"
+    assert config.feature_schema_version == "pair-1"
+    assert config.similarity == SimilarityConfig()
 
 
 @pytest.mark.parametrize("mode", ["ml", "llm"])
@@ -67,7 +76,7 @@ def test_baseline_is_deterministic_in_both_modes(make_record, mode):
 
 def test_baseline_records_version_of_the_selected_mode(make_record):
     submission = validate_record(make_record())
-    config = ProcessingConfig(prompt_template_version="prompt-7", feature_schema_version="features-3")
+    config = ProcessingConfig(mode=Mode.LLM, prompt_template_version="prompt-7", feature_schema_version="features-3")
 
     llm = BaselineProcessor(config).process(submission)
     ml = BaselineProcessor(ProcessingConfig(mode=Mode.ML, feature_schema_version="features-3")).process(submission)
@@ -83,10 +92,12 @@ def test_config_hash_is_stable_and_sensitive():
     assert config_hash(base) == config_hash(ProcessingConfig())
     assert config_hash(base).startswith("sha256:")
     changed = [
-        ProcessingConfig(mode=Mode.ML),
-        ProcessingConfig(prompt_template_version="stub-1"),
+        ProcessingConfig(mode=Mode.LLM),
+        ProcessingConfig(feature_schema_version="pair-2"),
         ProcessingConfig(processing_version="1.0.1"),
         ProcessingConfig(analyzers=("length",)),
+        ProcessingConfig(similarity=SimilarityConfig(ngram=4)),
+        ProcessingConfig(similarity=SimilarityConfig(normalize_identifiers=False)),
     ]
     assert len({config_hash(c) for c in changed} | {config_hash(base)}) == len(changed) + 1
 
@@ -109,3 +120,32 @@ def test_invalid_analyzers_section(analyzers):
 def test_unknown_config_table_is_rejected():
     with pytest.raises(ConfigError, match="unknown config tables"):
         parse_config({"processing": {}, "llm": {"temperature": 0}})
+
+
+def test_similarity_section():
+    config = parse_config(
+        {
+            "processing": {},
+            "similarity": {"ngram": 4, "normalize_identifiers": False, "top_k": 3, "methods": ["jaccard"]},
+        }
+    )
+    assert config.similarity == SimilarityConfig(ngram=4, normalize_identifiers=False, top_k=3, methods=("jaccard",))
+    assert parse_config({"processing": {}}).similarity == SimilarityConfig()
+
+
+@pytest.mark.parametrize(
+    ("section", "message"),
+    [
+        ({"ngram": 0}, "ngram"),
+        ({"ngram": True}, "ngram"),
+        ({"top_k": "5"}, "top_k"),
+        ({"normalize_identifiers": "yes"}, "normalize_identifiers"),
+        ({"methods": []}, "methods"),
+        ({"methods": ["jaccard", "ast"]}, "unknown similarity methods: ast"),
+        ({"methods": ["tfidf", "tfidf"]}, "duplicate"),
+        ({"threshold": 0.5}, "unknown config keys in \\[similarity\\]"),
+    ],
+)
+def test_similarity_section_is_validated(section, message):
+    with pytest.raises(ConfigError, match=message):
+        parse_config({"processing": {}, "similarity": section})

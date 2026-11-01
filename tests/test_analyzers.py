@@ -6,12 +6,18 @@ import json
 
 import pytest
 
-from submission_analyzer.analyzers import LengthAnalyzer, ModelStubAnalyzer, RequirementsAnalyzer, TemplateAnalyzer
+from submission_analyzer.analyzers import (
+    LengthAnalyzer,
+    ModelStubAnalyzer,
+    RequirementsAnalyzer,
+    TemplateAnalyzer,
+    TokenSimilarityAnalyzer,
+)
 from submission_analyzer.analyzers.model_stub import JsonFeedbackFormatter, ModelOutputError, RubricInputPreparer
 from submission_analyzer.analyzers.requirements import requirement_markers
 from submission_analyzer.analyzers.template import TEMPLATE_NOTE
 from submission_analyzer.core.config import Mode, ProcessingConfig
-from submission_analyzer.core.reports import CriterionStatus, EvidenceSource
+from submission_analyzer.core.reports import CriterionStatus, EvidenceSource, invalid_evidence
 from submission_analyzer.ingestion.validation import validate_record
 
 from .conftest import TEMPLATE
@@ -162,3 +168,46 @@ def test_invalid_model_output_is_rejected(make_record, make_context, raw, messag
     model_input = RubricInputPreparer().prepare(submission, make_context())
     with pytest.raises(ModelOutputError, match=message):
         JsonFeedbackFormatter().format(raw, model_input)
+
+
+# ---------- TokenSimilarityAnalyzer ----------
+
+SOLUTION = TEMPLATE.replace("    return", "    for i in range(1, n + 1):\n        result.append(str(i))\n    return")
+
+
+def _store(repository, make_record, **fields):
+    submission = validate_record(make_record(**fields))
+    repository.add(submission)
+    return submission
+
+
+def test_token_similarity_finds_copy_of_another_student(repository, make_record, make_context):
+    mine = _store(repository, make_record, submission_id="mine", student_id="p1", code=SOLUTION)
+    _store(repository, make_record, submission_id="copy", student_id="p2", code="# copied\n" + SOLUTION)
+    _store(repository, make_record, submission_id="own-v2", student_id="p1", code=SOLUTION)  # same student: skipped
+    _store(repository, make_record, submission_id="other", student_id="p3", code=SOLUTION,
+           assignment_id="lab-02-word-count")  # fmt: skip
+
+    report = TokenSimilarityAnalyzer(ProcessingConfig()).analyze(mine, make_context())
+
+    assert report.similarity == 1.0
+    assert "copy" in report.rubric_feedback[0].explanation
+    assert "not a verdict" in report.rubric_feedback[0].explanation
+    assert report.evidence and invalid_evidence(report, mine) == []
+    # The template header (line 1) is not evidence; an n-gram may join the last template line to own code.
+    assert all(e.start_line >= 2 for e in report.evidence)
+
+
+def test_token_similarity_without_candidates(repository, make_record, make_context):
+    mine = _store(repository, make_record, submission_id="mine", student_id="p1", code=SOLUTION)
+    report = TokenSimilarityAnalyzer(ProcessingConfig()).analyze(mine, make_context())
+    assert report.similarity is None
+    assert "no other student's submission" in report.rubric_feedback[0].explanation
+
+
+def test_token_similarity_template_only_is_not_an_accusation(repository, make_record, make_context):
+    mine = _store(repository, make_record, submission_id="mine", student_id="p1", code=TEMPLATE)
+    _store(repository, make_record, submission_id="other", student_id="p2", code=TEMPLATE)
+    report = TokenSimilarityAnalyzer(ProcessingConfig()).analyze(mine, make_context())
+    assert report.similarity is None and report.evidence == ()
+    assert "allowed template" in report.rubric_feedback[0].explanation
