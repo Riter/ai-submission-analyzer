@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from submission_analyzer import __version__
+from submission_analyzer.adapters.corpus import load_corpus
 from submission_analyzer.adapters.loaders import load_assignments, load_split
 from submission_analyzer.adapters.sources import JsonlFileSource
 from submission_analyzer.analysis.baseline import BaselineProcessor
@@ -29,6 +30,8 @@ from submission_analyzer.core.corpus import SplitName
 from submission_analyzer.core.errors import ConfigError, DataSourceError
 from submission_analyzer.core.hashing import file_sha256
 from submission_analyzer.core.models import Assignment
+from submission_analyzer.evaluation.dataset import ExperimentError
+from submission_analyzer.evaluation.experiment import run_experiment
 from submission_analyzer.ingestion.manifest import build_manifest
 from submission_analyzer.ingestion.service import ImportReport, IngestionService
 from submission_analyzer.similarity.methods import SimilarityError, create_method
@@ -74,6 +77,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_similarity.add_argument("--split", type=Path, help="split.json; the method is fitted on the tune side only")
     p_similarity.add_argument("--submission", help="print top-k candidates for this submission instead of all pairs")
     p_similarity.add_argument("--top-k", type=int, help="number of candidates (default: [similarity].top_k)")
+    p_similarity.add_argument(
+        "--threshold", type=float, help="mark pairs with score >= THRESHOLD as review_required (e.g. from experiment)"
+    )
+
+    p_experiment = sub.add_parser(
+        "experiment", help="fit review_required detectors on the tune side, evaluate them on the eval side"
+    )
+    p_experiment.add_argument("--corpus", type=Path, required=True, help="corpus directory (e.g. datasets/lab2)")
+    p_experiment.add_argument("--config", type=Path, help="processing config (TOML)")
+    p_experiment.add_argument("--mlflow", type=Path, help="log the run to a local MLflow store in this directory")
+    p_experiment.add_argument("--out", type=Path, help="also write the experiment report (JSON) to this path")
     return parser
 
 
@@ -82,6 +96,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if getattr(args, "assignments_required", False) and args.assignments is None:
         parser.error(f"{args.command} requires --assignments")
+    if args.command == "experiment":
+        return _experiment(args)
     try:
         config = load_config(args.config) if args.config else ProcessingConfig()
         assignments = (
@@ -141,6 +157,8 @@ def _similarity(
         raise ConfigError("--method tfidf requires --split: the vectorizer is fitted on the tune side only")
     if args.top_k is not None and args.top_k < 1:
         raise ConfigError("--top-k must be positive")
+    if args.threshold is not None and not 0.0 <= args.threshold <= 1.0:
+        raise ConfigError("--threshold must be within [0, 1]")
 
     report = ImportReport()
     # read -> validate -> features: one line at a time; only the index keeps the whole corpus.
@@ -165,12 +183,51 @@ def _similarity(
             raise DataSourceError(f"submission '{args.submission}' is not among accepted submissions")
         k = args.top_k or config.similarity.top_k
         output["submission_id"] = args.submission
-        output["top_k"] = [r.to_dict() for r in top_k(index, args.submission, method, k)]
+        candidates = top_k(index, args.submission, method, k, threshold=args.threshold)
+        output["top_k"] = [r.to_dict() for r in candidates]
     else:
-        cross, same = compare_all(index, method)
+        cross, same = compare_all(index, method, threshold=args.threshold)
         output["pairs"] = [r.to_dict() for r in cross]
         output["same_student_pairs"] = [r.to_dict() for r in same]
+    if args.threshold is not None:
+        output["threshold"] = args.threshold
     return output
+
+
+def _experiment(args: argparse.Namespace) -> int:
+    try:
+        config = load_config(args.config) if args.config else ProcessingConfig()
+        corpus = load_corpus(args.corpus, config.similarity)
+        result = run_experiment(
+            corpus.index,
+            corpus.pairs,
+            corpus.split,
+            config,
+            template_blind_index=corpus.template_blind_index(config.similarity),
+            inputs=corpus.file_hashes,
+        )
+        output: dict[str, Any] = {"import": corpus.import_report.to_dict()["counts"], **result.to_dict()}
+        if args.mlflow is not None:
+            # Imported here: MLflow is only needed when a run is logged.
+            from submission_analyzer.adapters.tracking import log_experiment
+
+            logged = log_experiment(
+                result,
+                args.mlflow,
+                [args.corpus / name for name in ("split.json", "pairs.jsonl", "provenance.jsonl")],
+                run_name=f"seed-{config.experiment.seed}",
+            )
+            output["mlflow"] = {"run_id": logged.run_id, "tracking_uri": logged.tracking_uri}
+    except (ConfigError, DataSourceError, ExperimentError, SimilarityError, OSError, UnicodeDecodeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+
+    text = json.dumps(output, ensure_ascii=False, indent=2)
+    if args.out is not None:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(text + "\n", encoding="utf-8")
+    print(text)
+    return EXIT_OK
 
 
 def _import_file(service: IngestionService, path: Path) -> ImportReport:

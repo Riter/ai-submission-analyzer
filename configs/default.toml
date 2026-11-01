@@ -16,3 +16,8 @@ ngram = 3
 normalize_identifiers = true   # user-defined names -> ID, string literals -> STR
 top_k = 5
 methods = ["jaccard", "tfidf"]
+
+# Evaluation experiment (lab 2, stage B): threshold baselines vs a classifier on pair features.
+[experiment]
+seed = 42
+classifier = "logistic_regression"

@@ -1,5 +1,7 @@
 # ai-submission-analyzer
 
+> Выполнил студент 102 группы Иванов Илья
+
 Система онлайн-школы: приём сдач лабораторных, валидация и анализ (сходство, обратная связь по рубрике).
 
 ## Отчёты
@@ -7,7 +9,7 @@
 | ЛР | Тема | Отчёт |
 |----|------|-------|
 | 1 | Приём работ и расширяемые анализаторы | [docs/reports/lab-1.md](docs/reports/lab-1.md) |
-| 2 | Анализ сходства и оценка качества (этап А) | [docs/reports/lab-2.md](docs/reports/lab-2.md) |
+| 2 | Анализ сходства и оценка качества | [docs/reports/lab-2.md](docs/reports/lab-2.md) |
 
 ## Установка
 
@@ -56,9 +58,9 @@ python scripts/generate_lab2_data.py      # → datasets/lab2/
 | Файл | Содержимое |
 |------|-----------|
 | `datasets/lab2/assignments.json` | 4 задания с разрешённым шаблоном |
-| `datasets/lab2/submissions.jsonl` | 40 сдач: оригиналы, копии, переформатированные и переименованные варианты, шаблон, SyntaxError, повторные версии |
+| `datasets/lab2/submissions.jsonl` | 48 сдач: оригиналы, копии, переформатированные, переименованные и изменённые (`modified`) варианты, шаблон, SyntaxError, повторные версии |
 | `datasets/lab2/provenance.jsonl` | происхождение каждой сдачи: `family_id`, `origin`, `derived_from` |
-| `datasets/lab2/pairs.jsonl` | 74 размеченные пары: `derivation_relation`, `template_only`, `split` |
+| `datasets/lab2/pairs.jsonl` | 110 размеченных пар: `derivation_relation`, `template_only`, `split` |
 | `datasets/lab2/split.json` | сторона `tune` / `eval` каждого семейства и сдачи |
 
 Формат записей, коды ошибок, формат manifest и корпуса — в [`docs/data_contract.md`](docs/data_contract.md).
@@ -86,12 +88,32 @@ submission-analyzer analyze datasets/lab1/submissions.jsonl \
 # сходство (ЛР 2): потоковое чтение -> признаки tokenize -> пары одного задания разных студентов
 submission-analyzer similarity datasets/lab2/submissions.jsonl \
     --assignments datasets/lab2/assignments.json --config configs/default.toml \
-    [--method jaccard|tfidf] [--split datasets/lab2/split.json] [--submission sub-0001 --top-k 5]
+    [--method jaccard|tfidf] [--split datasets/lab2/split.json] [--submission sub-0001 --top-k 5] \
+    [--threshold 0.59]
+
+# эксперимент (ЛР 2, этап Б): пороги и классификатор review_required обучаются на tune, оцениваются на eval
+submission-analyzer experiment --corpus datasets/lab2 --config configs/default.toml \
+    --mlflow mlruns --out out/experiment.json
+mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db   # просмотр run: params, метрики, артефакты, модель
+
+python scripts/run_seed_sweep.py          # разброс метрик по seed корпуса (нестабильность на малом наборе)
+python scripts/profile_similarity.py      # wall time и peak memory на 100/1000/5000 записей
 ```
 
 `--method tfidf` требует `--split`: векторизатор обучается только на стороне `tune`. Без `--submission`
 печатаются все пары (`pairs`) и отдельно версии одного студента (`same_student_pairs`); с `--submission` —
-top-k кандидатов без самой работы и без сдач других заданий. Score — сигнал для ручного разбора, а не вердикт.
+top-k кандидатов без самой работы и без сдач других заданий. `--threshold` (например, порог из эксперимента)
+добавляет `review_required` и строит evidence только для отмеченных пар. Score — сигнал для ручного разбора,
+а не вердикт.
+
+### Защита: преподаватель добавляет новый шаблон
+
+1. Дописать строки в `allowed_template` нужного задания в `datasets/lab2/assignments.json`.
+2. `submission-analyzer similarity ... --submission <id>`: строки нового шаблона уходят из `evidence` и из score,
+   растёт число шаблонных n-грамм, пояснение говорит, что шаблон разрешён.
+3. `submission-analyzer experiment --corpus datasets/lab2 --mlflow mlruns`: в новом run другой
+   `sha256:assignments.json` — по нему отчёты со старым и новым шаблоном различаются; сравнить метрики и
+   `template_only_max` двух run в `mlflow ui`. Проверка — `tests/test_template_change.py`.
 
 ### Анализаторы
 
@@ -146,6 +168,7 @@ outcome = service.submit({...})   # IngestOutcome или SchemaError / ConflictE
 ```bash
 pytest -q
 python scripts/measure_index_memory.py    # память индекса признаков (ЛР 2)
+python scripts/run_seed_sweep.py          # стабильность метрик эксперимента
 ```
 
 ## Структура
@@ -157,7 +180,7 @@ src/submission_analyzer/
     models.py             Submission, AIDeclaration, Assignment (frozen dataclasses)
     errors.py             FormatError / SchemaError / ConflictError с деталями code, field, message
     reports.py            AnalysisReport, RubricFeedback, Evidence
-    config.py             ProcessingConfig, режим ml | llm, набор анализаторов, [similarity], config_hash
+    config.py             ProcessingConfig, режим ml | llm, анализаторы, [similarity], [experiment], config_hash
     corpus.py             происхождение примеров, размеченные пары, split, проверка утечки семейств
     hashing.py            content_hash, file_sha256
     textutils.py          source_lines, count_nonempty_lines
@@ -170,6 +193,8 @@ src/submission_analyzer/
   adapters/             работа с файлами
     sources.py            JsonlFileSource / InMemorySource (контекстные менеджеры)
     loaders.py            чтение assignments.json и метаданных корпуса (provenance, pairs, split)
+    corpus.py             загрузка каталога корпуса в индекс признаков + хеши файлов
+    tracking.py           MLflow: params, метрики, артефакты разбиения, модель (SQLite в mlruns/)
   analyzers/            протокол Analyzer + length, template, requirements, token_similarity, model_stub
   similarity/           сходство кода (ЛР 2)
     features.py           токены tokenize -> n-граммы, шаблонные n-граммы отдельно
@@ -177,17 +202,24 @@ src/submission_analyzer/
     pairs.py              кандидаты, PairResult с evidence, top-k
     pair_features.py      признаки пары для ML-классификатора (схема pair-1)
     index.py, pipeline.py индекс признаков и ленивый конвейер read -> validate -> features
+  evaluation/           оценка сигнала review_required (ЛР 2, этап Б)
+    dataset.py            размеченные пары + признаки; методы обучаются только на tune
+    metrics.py            матрица ошибок, precision / recall / F1, доля неопределённых
+    threshold.py          пороговый baseline (порог с лучшим F1 на tune)
+    classifier.py         логистическая регрессия на признаках pair-1, проверка ответа модели, fallback
+    experiment.py         сравнение детекторов на одном split, список ошибок
   analysis/             запуск анализаторов
     registry.py           реестр фабрик анализаторов
     service.py            AnalysisService: запуск по реестру, изоляция ошибок
     baseline.py           детерминированный baseline для обоих режимов
 ```
 
-Зависимости направлены к `core`, циклов нет: `storage`, `adapters` → `core`; `ingestion` → `core`, `storage`;
-`similarity` → `core`, `ingestion`; `analyzers` → `core`, `similarity`; `analysis` → `analyzers`, `core`;
-`cli` собирает всё вместе.
-Файлы, stdin и сеть трогают только `adapters`, `cli` и `core.config.load_config`; доменные пакеты
-(`core`, `ingestion`, `storage`, `similarity`, `analyzers`, `analysis`) работают с уже прочитанными данными.
+Зависимости направлены к `core`, циклов нет: `storage` → `core`; `ingestion` → `core`, `storage`;
+`similarity` → `core`, `ingestion`; `evaluation` → `core`, `similarity`; `analyzers` → `core`, `similarity`;
+`analysis` → `analyzers`, `core`; `adapters` (файлы, MLflow) → доменные пакеты; `cli` собирает всё вместе.
+Файлы, stdin и MLflow трогают только `adapters`, `cli` и `core.config.load_config`; доменные пакеты
+(`core`, `ingestion`, `storage`, `similarity`, `evaluation`, `analyzers`, `analysis`) работают с уже прочитанными
+данными.
 
 ## Документы
 - [`docs/data_contract.md`](docs/data_contract.md) — формат данных, коды ошибок, manifest, AnalysisReport

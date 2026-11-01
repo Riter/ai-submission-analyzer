@@ -78,13 +78,17 @@ ngram = 3                          # длина токенной n-граммы
 normalize_identifiers = true       # пользовательские имена -> ID, строковые литералы -> STR
 top_k = 5                          # число кандидатов по умолчанию
 methods = ["jaccard", "tfidf"]     # разрешённые методы сравнения
+
+[experiment]                       # необязательно (ЛР 2, этап Б)
+seed = 42                          # random_state классификатора
+classifier = "logistic_regression" # пока единственный вариант
 ```
 
 Неизвестные таблицы и ключи отклоняются (`ConfigError`), неизвестный id анализатора — при создании сервиса,
 до обработки первой сдачи.
 
 `config_hash` = `sha256:` от канонического JSON `{mode, processing_version, prompt_template_version,
-feature_schema_version, analyzers, similarity}`. Одинаковый `config_hash` означает, что отчёты получены одной
+feature_schema_version, analyzers, similarity, experiment}`. Одинаковый `config_hash` означает, что отчёты получены одной
 конфигурацией и сравнимы.
 
 На ЛР 1 оба режима возвращают детерминированный baseline: число непустых строк `text` и `code`,
@@ -153,7 +157,8 @@ feature_schema_version, analyzers, similarity}`. Одинаковый `config_ha
 
 - `family_id` — семейство: оригинальное решение и все его производные.
 - `origin`: `original` | `exact_copy` | `reformatted` (отступы, комментарии, пустые строки) |
-  `renamed` (переименование идентификаторов) | `resubmission` (повторная версия того же студента).
+  `renamed` (переименование идентификаторов) | `modified` (в копию вставлены 2–3 посторонние инструкции) |
+  `resubmission` (повторная версия того же студента).
 
 `pairs.jsonl` — размеченные пары разных студентов одного задания:
 
@@ -162,13 +167,15 @@ feature_schema_version, analyzers, similarity}`. Одинаковый `config_ha
  "family_b": "lab-01-fizzbuzz/f2", "derivation_relation": "independent", "template_only": true, "split": "tune"}
 ```
 
-- `derivation_relation`: `exact_copy` | `reformatted` | `renamed` (внутри семейства; для пары двух производных
-  берётся более сильное преобразование) | `independent` (разные семейства).
+- `derivation_relation`: `exact_copy` | `reformatted` | `renamed` | `modified` (внутри семейства; для пары двух
+  производных берётся более сильное преобразование) | `independent` (разные семейства).
 - `template_only`: у независимой пары общие непустые строки есть, и все они — строки разрешённого шаблона.
 - `split`: `tune` | `eval`. Пары между семействами разных сторон не размечаются.
 
 `split.json`: `{"seed": 42, "families": {family_id: side}, "submissions": {submission_id: side}}`.
 Семейство целиком лежит на одной стороне; `check_no_family_leakage` проверяет это для сдач и пар.
+Разбиение стратифицировано: каждый набор производных попадает в `tune` для половины заданий и в `eval` для
+другой половины, поэтому на обеих сторонах есть все виды `derivation_relation` и пары `template_only`.
 
 ## Признаки и сравнение пар (ЛР 2)
 
@@ -194,7 +201,8 @@ feature_schema_version, analyzers, similarity}`. Одинаковый `config_ha
   "explanation": "44 n-grams of the students' own code are shared. ... not a verdict about a violation.",
   "evidence_a": [{"source": "code", "start_line": 2, "end_line": 12, "note": "n-grams shared with the other submission (outside the allowed template)"}],
   "evidence_b": [...],
-  "warnings": []
+  "warnings": [],
+  "review_required": null
 }
 ```
 
@@ -204,6 +212,48 @@ feature_schema_version, analyzers, similarity}`. Одинаковый `config_ha
   `explanation` прямо говорит, что использование шаблона разрешено.
 - `evidence_a` / `evidence_b`: диапазоны строк каждой сдачи, где лежат общие n-граммы (вне шаблона).
 - `warnings`: например, сдача не разбирается `ast.parse` и сравнена только по токенам.
+- `review_required`: `null` без порога; с `--threshold T` — `score >= T` (или `null`, если score нет).
+  С порогом evidence строится только для пар с `review_required = true`; score от этого не меняется.
+  Это сигнал для ручного разбора, а не решение о нарушении.
 
 Признаки пары для ML (`similarity/pair_features.py`, схема `pair-1`): `jaccard`, `tfidf_cosine`,
 `template_shared`, `shared_grams`, `size_ratio`, `token_ratio`, `has_parse_error`, `has_syntax_error`.
+
+## Эксперимент `review_required` (ЛР 2, этап Б)
+
+Команда `submission-analyzer experiment --corpus DIR [--config] [--mlflow DIR] [--out FILE]`.
+
+- Положительный класс — пара производных одной работы (`derivation_relation != independent`).
+- Все детекторы обучаются **только на `tune`** (порог, словарь TF-IDF, веса классификатора) и оцениваются
+  на `eval`. Пары без score — **неопределённые**: в матрицу ошибок не входят, их доля выводится отдельно.
+- Детекторы: `threshold:jaccard`, `threshold:tfidf_cosine` (порог с лучшим F1 на `tune`, при равенстве —
+  больший), `classifier:logistic_regression` (вероятность ≥ 0.5 на признаках `pair-1` с индикаторами
+  пропусков), `threshold:jaccard_template_blind` (абляция: Jaccard без исключения шаблона).
+- Ответ классификатора проверяется: вероятность вне `[0, 1]`, NaN или матрица не той формы → решение
+  порогового baseline, и в решении указан его `detector_id` с `fallback_reason` (не выдаётся за ответ модели).
+  Схема признаков модели должна совпадать с `processing.feature_schema_version`.
+
+```json
+{
+  "import": {"accepted": 48, "duplicate": 0, "rejected_lines": 0},
+  "params": {"config_hash": "sha256:...", "seed": 42, "feature_schema_version": "pair-1", "pairs_tune": 55,
+             "pairs_eval": 55, "sha256:split.json": "sha256:...", "...": "..."},
+  "detectors": [{"detector_id": "threshold:jaccard", "detector_version": "1.0.0", "threshold": 0.590136,
+                 "tune": {"confusion_matrix": {"tp": 20, "fp": 0, "fn": 0, "tn": 35}, "precision": 1.0,
+                          "recall": 1.0, "f1": 1.0, "undetermined": 0, "undetermined_share": 0.0, "total": 55},
+                 "eval": {"...": "..."}, "fallbacks": 0, "template_only_max": 0.328125}],
+  "errors": [{"detector_id": "threshold:jaccard", "kind": "false_negative", "a": "sub-0023", "b": "sub-0025",
+              "derivation_relation": "modified", "template_only": false, "features": {"jaccard": 0.475, "...": 0},
+              "probability": null}],
+  "mlflow": {"run_id": "...", "tracking_uri": "sqlite:///.../mlruns/mlflow.db"}
+}
+```
+
+`template_only_max` — наибольший score (для классификатора — вероятность) среди пар `eval`, общих только по
+шаблону: насколько близко шаблон подходит к порогу.
+
+MLflow (`--mlflow mlruns`): локальная SQLite-база `mlruns/mlflow.db` и артефакты в `mlruns/artifacts/`.
+В run записываются params (конфигурация, `config_hash`, seed, хеши `assignments.json`, `submissions.jsonl`,
+`pairs.jsonl`, `split.json`, `provenance.jsonl`), метрики `tune/…` и `eval/…` по детекторам, пороги,
+артефакты `data/split.json`, `data/pairs.jsonl`, `data/provenance.jsonl`, `experiment.json` и модель
+(`mlflow.sklearn`), тег `feature_schema_version`. Просмотр: `mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db`.

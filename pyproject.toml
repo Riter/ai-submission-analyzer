@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "Online-school submission intake and pluggable analyzers (MAI Python labs, AI/MLOps track)."
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["scikit-learn>=1.5"]
+dependencies = ["scikit-learn>=1.5", "mlflow>=2.16"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
@@ -25,3 +25,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+filterwarnings = [
+    # Raised inside MLflow's SQLite store, not by this project.
+    "ignore:The ``noload`` loader strategy is deprecated",
+]

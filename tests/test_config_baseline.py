@@ -6,6 +6,7 @@ import pytest
 
 from submission_analyzer.analysis.baseline import BaselineProcessor, count_nonempty_lines
 from submission_analyzer.core.config import (
+    ExperimentConfig,
     Mode,
     ProcessingConfig,
     SimilarityConfig,
@@ -149,3 +150,23 @@ def test_similarity_section():
 def test_similarity_section_is_validated(section, message):
     with pytest.raises(ConfigError, match=message):
         parse_config({"processing": {}, "similarity": section})
+
+
+def test_experiment_section():
+    config = parse_config({"processing": {}, "experiment": {"seed": 7}})
+    assert config.experiment == ExperimentConfig(seed=7)
+    assert config_hash(config) != config_hash(ProcessingConfig())
+
+
+@pytest.mark.parametrize(
+    ("section", "message"),
+    [
+        ({"seed": -1}, "seed"),
+        ({"seed": "42"}, "seed"),
+        ({"classifier": "random_forest"}, "classifier"),
+        ({"threshold": 0.5}, "unknown config keys in \\[experiment\\]"),
+    ],
+)
+def test_experiment_section_is_validated(section, message):
+    with pytest.raises(ConfigError, match=message):
+        parse_config({"processing": {}, "experiment": section})

@@ -186,3 +186,6 @@ pytest.ini
 
 # CLI outputs (manifests, reports)
 /out/
+
+# MLflow tracking store (sqlite + artifacts), created by `submission-analyzer experiment --mlflow mlruns`
+/mlruns/

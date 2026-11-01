@@ -20,6 +20,7 @@ verdict about plagiarism. Re-running with the same seed gives identical files.
 from __future__ import annotations
 
 import argparse
+import ast
 import io
 import json
 import random
@@ -239,11 +240,21 @@ SYNTAX_ERROR = (
 # Members of a family by layout: the derived variants made from its original.
 FAMILY_LAYOUTS: list[tuple[str, ...]] = [
     ("exact_copy", "reformatted"),
-    ("renamed",),
+    ("renamed", "modified"),
     ("reformatted", "renamed"),
-    (),
+    ("modified",),
 ]
-RELATION_RANK = {"exact_copy": 0, "reformatted": 1, "renamed": 2}
+RELATION_RANK = {"exact_copy": 0, "reformatted": 1, "renamed": 2, "modified": 3}
+# Statements a "modified" copy inserts into the copied function (they change the token sequence).
+SNIPPETS: list[list[str]] = [
+    ["steps = 0", "steps += 1"],
+    ["checked = []"],
+    ["if False:", '    print("unreachable")'],
+    ['debug = {"stage": "start"}'],
+    ["for _ in range(0):", "    pass"],
+    ["limit = 10 ** 6"],
+]
+_BLOCK_CONTINUATIONS = ("elif", "else", "except", "finally")
 AI_TOOLS = ["ChatGPT", "Claude", "GitHub Copilot"]
 COMMENTS = ["# main loop", "# edge case", "# build the answer", "# helper", "# done"]
 
@@ -285,6 +296,43 @@ def rename(code: str, mapping: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
+def _statement_rows(code: str) -> list[int]:
+    """Rows where a logical line (statement) starts, found with ``tokenize``."""
+    rows: list[int] = []
+    at_start = True
+    for tok in tokenize.generate_tokens(io.StringIO(code).readline):
+        if tok.type in (tokenize.NEWLINE, tokenize.NL):
+            at_start = tok.type == tokenize.NEWLINE or at_start
+            continue
+        if tok.type in (tokenize.INDENT, tokenize.DEDENT, tokenize.COMMENT):
+            continue
+        if at_start:
+            rows.append(tok.start[0])
+            at_start = False
+    return rows
+
+
+def modify(code: str, rng: random.Random) -> str:
+    """Copy with a partial edit: 2-3 statements inserted inside the copied functions."""
+    lines = code.split("\n")
+    main_row = next(no for no, line in enumerate(lines, start=1) if line.startswith("if __name__"))
+    candidates = [
+        row
+        for row in _statement_rows(code)
+        if row < main_row
+        and lines[row - 1].startswith(" ")
+        and not lines[row - 1].lstrip().startswith(_BLOCK_CONTINUATIONS)
+    ]
+    rows = sorted(rng.sample(candidates, k=min(len(candidates), rng.randint(2, 3))), reverse=True)
+    for row in rows:
+        target = lines[row - 1]
+        indent = target[: len(target) - len(target.lstrip())]
+        lines[row - 1 : row - 1] = [indent + line for line in rng.choice(SNIPPETS)]
+    result = "\n".join(lines)
+    ast.parse(result)  # an edited copy must stay valid Python
+    return result
+
+
 def derive(code: str, relation: str, mapping: dict[str, str], rng: random.Random) -> str:
     if relation == "exact_copy":
         return code
@@ -292,6 +340,8 @@ def derive(code: str, relation: str, mapping: dict[str, str], rng: random.Random
         return reformat(code, rng)
     if relation == "renamed":
         return rename(code, mapping)
+    if relation == "modified":
+        return modify(code, rng)
     raise ValueError(relation)
 
 
@@ -317,6 +367,7 @@ class CorpusBuilder:
         self.records: list[dict[str, Any]] = []
         self.provenance: list[dict[str, Any]] = []
         self.family_assignment: dict[str, str] = {}
+        self.family_layout: dict[str, int] = {}
         self._student = 0
 
     def next_student(self) -> str:
@@ -366,13 +417,14 @@ class CorpusBuilder:
     def build(self) -> None:
         for assignment in ASSIGNMENTS:
             aid = assignment["assignment_id"]
-            layouts = FAMILY_LAYOUTS[:]
+            layouts = list(range(len(FAMILY_LAYOUTS)))
             self.rng.shuffle(layouts)
             for no, ((body, text, mapping), layout) in enumerate(zip(SOLUTIONS[aid], layouts, strict=True), start=1):
                 family = f"{aid}/f{no}"
                 code = body + _MAIN[aid]
                 original = self.add(aid, code, text, family, "original", None)
-                for relation in layout:
+                self.family_layout[family] = layout
+                for relation in FAMILY_LAYOUTS[layout]:
                     self.add(
                         aid,
                         derive(code, relation, mapping, self.rng),
@@ -404,14 +456,21 @@ class CorpusBuilder:
             )
 
     def split(self) -> dict[str, str]:
-        """Assign whole families to tune or eval, balanced within each assignment."""
+        """Assign whole families to tune or eval.
+
+        Stratified: every family layout lands on each side for half of the
+        assignments, so both sides contain every kind of derivation. Special
+        single-member families are split between the sides at random.
+        """
         sides: dict[str, str] = {}
-        for assignment in ASSIGNMENTS:
-            families = sorted(f for f, a in self.family_assignment.items() if a == assignment["assignment_id"])
-            self.rng.shuffle(families)
-            half = (len(families) + 1) // 2
-            for i, family in enumerate(families):
-                sides[family] = "tune" if i < half else "eval"
+        for k, assignment in enumerate(ASSIGNMENTS):
+            for family, aid in sorted(self.family_assignment.items()):
+                if aid == assignment["assignment_id"] and family in self.family_layout:
+                    sides[family] = "tune" if (self.family_layout[family] + k) % 2 == 0 else "eval"
+        special = sorted(f for f in self.family_assignment if f not in self.family_layout)
+        self.rng.shuffle(special)
+        for i, family in enumerate(special):
+            sides[family] = "tune" if i % 2 == 0 else "eval"
         return sides
 
     def pairs(self, sides: dict[str, str]) -> list[dict[str, Any]]:
@@ -456,7 +515,10 @@ def check(records: list[dict[str, Any]], pairs: list[dict[str, Any]], sides: dic
     assert len(pairs) >= MIN_PAIRS, len(pairs)
     assert sum(p["template_only"] for p in pairs) >= MIN_TEMPLATE_PAIRS
     assert all(sides[p["family_a"]] == sides[p["family_b"]] == p["split"] for p in pairs)
-    assert {p["split"] for p in pairs} == {"tune", "eval"}
+    for side in ("tune", "eval"):
+        relations = {p["derivation_relation"] for p in pairs if p["split"] == side}
+        assert relations == {"exact_copy", "reformatted", "renamed", "modified", "independent"}, (side, relations)
+        assert any(p["template_only"] for p in pairs if p["split"] == side), side
 
 
 def write_jsonl(path: Path, items: list[dict[str, Any]]) -> None:

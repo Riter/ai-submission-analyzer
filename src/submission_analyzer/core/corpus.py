@@ -16,6 +16,7 @@ class Origin(StrEnum):
     EXACT_COPY = "exact_copy"
     REFORMATTED = "reformatted"
     RENAMED = "renamed"
+    MODIFIED = "modified"  # copy with a few statements inserted
     RESUBMISSION = "resubmission"  # a later version by the same student
 
 
@@ -23,6 +24,7 @@ class DerivationRelation(StrEnum):
     EXACT_COPY = "exact_copy"
     REFORMATTED = "reformatted"
     RENAMED = "renamed"
+    MODIFIED = "modified"
     INDEPENDENT = "independent"
 
 

@@ -17,6 +17,7 @@ from submission_analyzer.similarity.pairs import (
     candidate_pairs,
     compare,
     compare_all,
+    iter_compare,
     top_k,
 )
 
@@ -156,3 +157,17 @@ def test_pair_result_serializes(index):
     data = compare(index.get("a"), index.get("c"), JaccardMethod()).to_dict()
     assert set(data) >= {"a", "b", "method_id", "method_version", "score", "status", "evidence_a", "evidence_b"}
     assert data["kind"] == "cross_student"
+
+
+def test_threshold_keeps_scores_and_limits_evidence_to_review_pairs(index):
+    """The optimization (evidence only where review is needed) must not change any score."""
+    full = list(iter_compare(index, JaccardMethod()))
+    flagged = list(iter_compare(index, JaccardMethod(), threshold=0.5))
+    assert [(r.a, r.b, r.score, r.shared_grams) for r in full] == [(r.a, r.b, r.score, r.shared_grams) for r in flagged]
+    for before, after in zip(full, flagged, strict=True):
+        assert after.review_required == (None if after.score is None else after.score >= 0.5)
+        if after.review_required:
+            assert (after.evidence_a, after.evidence_b) == (before.evidence_a, before.evidence_b)
+        else:
+            assert after.evidence_a == after.evidence_b == ()
+    assert any(r.review_required for r in flagged) and not all(r.review_required for r in flagged)

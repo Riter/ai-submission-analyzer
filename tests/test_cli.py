@@ -157,7 +157,7 @@ def test_similarity_command_on_corpus(capsys, method):
     )  # fmt: skip
     assert code == EXIT_OK
     assert data["method"]["id"] == method and data["method"]["fit"]["side"] == "tune"
-    assert data["import"]["accepted"] == 40
+    assert data["import"]["accepted"] == 48
 
     labels = labeled_pairs()
     scored = {(r["a"], r["b"]): r for r in data["pairs"]}
@@ -198,3 +198,27 @@ def test_similarity_method_must_be_enabled(capsys, tmp_path: Path):
                  "--method", "tfidf", "--split", LAB2_SPLIT])  # fmt: skip
     assert code == EXIT_USAGE
     assert "not enabled" in capsys.readouterr().err
+
+
+def test_similarity_threshold_marks_review_required(capsys):
+    code, data = run(capsys, "similarity", LAB2, "--assignments", LAB2_ASSIGNMENTS, "--threshold", "0.6")
+    assert code == EXIT_OK and data["threshold"] == 0.6
+    for pair in data["pairs"]:
+        expected = None if pair["score"] is None else pair["score"] >= 0.6
+        assert pair["review_required"] == expected
+    assert any(p["review_required"] for p in data["pairs"]) and not all(p["review_required"] for p in data["pairs"])
+
+
+def test_experiment_command(capsys, tmp_path: Path):
+    out = tmp_path / "experiment.json"
+    code, data = run(capsys, "experiment", "--corpus", str(LAB2_DIR), "--config", CONFIG, "--out", str(out))
+    assert code == EXIT_OK
+    assert data["import"] == {"accepted": 48, "duplicate": 0, "rejected_lines": 0}
+    assert {d["detector_id"] for d in data["detectors"]} >= {"threshold:jaccard", "classifier:logistic_regression"}
+    assert json.loads(out.read_text(encoding="utf-8")) == data
+    assert "mlflow" not in data
+
+
+def test_experiment_usage_errors(capsys, tmp_path: Path):
+    assert main(["experiment", "--corpus", str(tmp_path)]) == EXIT_USAGE
+    assert "missing corpus files" in capsys.readouterr().err

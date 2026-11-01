@@ -21,9 +21,11 @@ class Mode(StrEnum):
     LLM = "llm"
 
 
-_KNOWN_TABLES = frozenset({"processing", "analyzers", "similarity"})
+_KNOWN_TABLES = frozenset({"processing", "analyzers", "similarity", "experiment"})
 _KNOWN_KEYS = frozenset({"mode", "processing_version", "prompt_template_version", "feature_schema_version"})
 _SIMILARITY_KEYS = frozenset({"ngram", "normalize_identifiers", "top_k", "methods"})
+_EXPERIMENT_KEYS = frozenset({"seed", "classifier"})
+CLASSIFIERS: tuple[str, ...] = ("logistic_regression",)
 DEFAULT_ANALYZERS: tuple[str, ...] = ("length", "template", "requirements", "token_similarity", "model_stub")
 SIMILARITY_METHODS: tuple[str, ...] = ("jaccard", "tfidf")
 
@@ -48,6 +50,17 @@ class SimilarityConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ExperimentConfig:
+    """Evaluation experiment of the ML track (lab 2, stage B)."""
+
+    seed: int = 42
+    classifier: str = "logistic_regression"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"seed": self.seed, "classifier": self.classifier}
+
+
+@dataclass(frozen=True, slots=True)
 class ProcessingConfig:
     mode: Mode = Mode.ML
     processing_version: str = "1.0.0"
@@ -56,6 +69,7 @@ class ProcessingConfig:
     feature_schema_version: str | None = "pair-1"
     analyzers: tuple[str, ...] = DEFAULT_ANALYZERS
     similarity: SimilarityConfig = SimilarityConfig()
+    experiment: ExperimentConfig = ExperimentConfig()
 
 
 def config_hash(config: ProcessingConfig) -> str:
@@ -71,6 +85,7 @@ def config_hash(config: ProcessingConfig) -> str:
         "feature_schema_version": config.feature_schema_version,
         "analyzers": list(config.analyzers),
         "similarity": config.similarity.to_dict(),
+        "experiment": config.experiment.to_dict(),
     }
     return "sha256:" + hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
@@ -78,7 +93,7 @@ def config_hash(config: ProcessingConfig) -> str:
 def parse_config(data: Mapping[str, Any]) -> ProcessingConfig:
     """Build a config from a parsed TOML document.
 
-    ``[processing]`` is required; ``[analyzers]`` and ``[similarity]`` are optional.
+    ``[processing]`` is required; ``[analyzers]``, ``[similarity]`` and ``[experiment]`` are optional.
     """
     unknown_tables = sorted(set(data) - _KNOWN_TABLES)
     if unknown_tables:
@@ -116,6 +131,7 @@ def parse_config(data: Mapping[str, Any]) -> ProcessingConfig:
         mode=mode,
         analyzers=_parse_analyzers(data.get("analyzers")),
         similarity=_parse_similarity(data.get("similarity")),
+        experiment=_parse_experiment(data.get("experiment")),
         **values,
     )
 
@@ -175,6 +191,24 @@ def _parse_similarity(section: Any) -> SimilarityConfig:
         top_k=positive_int("top_k"),
         methods=tuple(methods),
     )
+
+
+def _parse_experiment(section: Any) -> ExperimentConfig:
+    defaults = ExperimentConfig()
+    if section is None:
+        return defaults
+    if not isinstance(section, Mapping):
+        raise ConfigError("[experiment] must be a table")
+    unknown = sorted(set(section) - _EXPERIMENT_KEYS)
+    if unknown:
+        raise ConfigError(f"unknown config keys in [experiment]: {', '.join(unknown)}")
+    seed = section.get("seed", defaults.seed)
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ConfigError("experiment.seed must be a non-negative integer")
+    classifier = section.get("classifier", defaults.classifier)
+    if classifier not in CLASSIFIERS:
+        raise ConfigError(f"experiment.classifier must be one of: {', '.join(CLASSIFIERS)}; got {classifier!r}")
+    return ExperimentConfig(seed=seed, classifier=classifier)
 
 
 def load_config(path: Path) -> ProcessingConfig:
